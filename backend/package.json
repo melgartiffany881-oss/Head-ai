@@ -1,0 +1,15 @@
+{
+  "name": "hirestack-ai-backend",
+  "version": "1.0.0",
+  "description": "HireStack AI - Backend API for AI-powered recruiting assistant",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "openai": "^6.45.0"
+  }
+}
