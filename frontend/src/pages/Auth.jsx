@@ -6,15 +6,20 @@ export function Login({ onToggleAuth }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const { login } = useAuth();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 800));
-    login(email, password);
-    setLoading(false);
+    setError('');
+    try {
+      await login(email, password);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -30,6 +35,12 @@ export function Login({ onToggleAuth }) {
           <p className="mt-2 text-muted-foreground text-sm">Sign in to your account</p>
         </div>
         
+        {error && (
+          <div className="bg-destructive/10 border border-destructive text-destructive p-3 rounded-md text-sm">
+            {error}
+          </div>
+        )}
+
         <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div>
@@ -85,17 +96,21 @@ export function Signup({ onToggleAuth }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [plan, setPlan] = useState('Starter');
   const [loading, setLoading] = useState(false);
-  const { signup } = useAuth();
+  const [error, setError] = useState('');
+  const { register } = useAuth();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 800));
-    signup(name, email, password, plan);
-    setLoading(false);
+    setError('');
+    try {
+      await register(name, email, password);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -111,6 +126,12 @@ export function Signup({ onToggleAuth }) {
           <p className="mt-2 text-muted-foreground text-sm">Join HireStack AI today</p>
         </div>
         
+        {error && (
+          <div className="bg-destructive/10 border border-destructive text-destructive p-3 rounded-md text-sm">
+            {error}
+          </div>
+        )}
+
         <form className="mt-8 space-y-4" onSubmit={handleSubmit}>
           <div className="space-y-4">
             <div>
@@ -138,17 +159,16 @@ export function Signup({ onToggleAuth }) {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1" htmlFor="plan">Choose a Plan</label>
-              <select
-                id="plan"
+              <label className="block text-sm font-medium mb-1" htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                required
                 className="w-full p-2 bg-background border border-input rounded-md focus:ring-2 focus:ring-primary outline-none"
-                value={plan}
-                onChange={(e) => setPlan(e.target.value)}
-              >
-                <option value="Starter">Starter ($29/mo)</option>
-                <option value="Pro">Pro ($79/mo)</option>
-                <option value="Enterprise">Enterprise (Custom)</option>
-              </select>
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+              />
             </div>
           </div>
 
