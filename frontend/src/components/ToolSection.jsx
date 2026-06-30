@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import axios from 'axios';
 import { Copy, Loader2, Check } from 'lucide-react';
 
+const API_BASE = 'https://backend-roan-psi-19.vercel.app';
+
 export default function ToolSection({ 
   title, 
   description, 
@@ -115,11 +117,11 @@ export default function ToolSection({
     setResult('');
     
     try {
-      const response = await axios.post(`http://localhost:3001/api/${endpoint}`, formData);
+      const response = await axios.post(`${API_BASE}/api/${endpoint}`, formData);
       setResult(formatResponse(response.data));
     } catch (err) {
       console.error(err);
-      setError('Failed to generate. Please ensure the backend is running at localhost:3001.');
+      setError('Failed to generate. Please try again later.');
     } finally {
       setLoading(false);
     }
