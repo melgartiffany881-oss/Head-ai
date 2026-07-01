@@ -72,7 +72,7 @@ function memQuery(text, params) {
   const upper = text.trim().toUpperCase();
   if (upper.startsWith('CREATE TABLE')) return [];
 
-  const tableMatch = text.match(/(?:FROM|INTO|UPDATE|TABLE\s+(\w+))/i);
+  const tableMatch = text.match(/(?:FROM|INTO|UPDATE|TABLE)\s+(\w+)/i);
   const table = tableMatch?.[1]?.toLowerCase() || '';
   const store = table === 'users' ? memStore.users : table === 'subscriptions' ? memStore.subs : table === 'usage_log' ? memStore.usage : null;
   if (!store && !upper.startsWith('INSERT') && !upper.startsWith('UPDATE')) return [];
