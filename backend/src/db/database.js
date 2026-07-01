@@ -1,9 +1,3 @@
-/**
- * Database module — Postgres via `pg` pool
- * Compatible with Vercel serverless functions.
- * Uses DATABASE_URL env var (Neon or any Postgres connection string).
- */
-
 const { Pool } = require('pg');
 
 let pool = null;
@@ -13,25 +7,31 @@ async function getPool() {
   if (!pool) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
-      throw new Error('DATABASE_URL environment variable is required');
+      throw new Error('DATABASE_URL environment variable is required. Set it in Vercel Environment Variables.');
     }
-    pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false }, max: 1 });
+    pool = new Pool({
+      connectionString,
+      ssl: { rejectUnauthorized: false },
+      max: 1,
+      connectionTimeoutMillis: 10000,
+    });
   }
   return pool;
 }
 
-/**
- * Execute a query. Usage: const rows = await q('SELECT * FROM users WHERE email = $1', [email]);
- * Returns the rows array (not the full result object).
- */
 async function q(text, params = []) {
-  const p = await getPool();
-  if (!initialized) {
-    await initTables(p);
-    initialized = true;
+  try {
+    const p = await getPool();
+    if (!initialized) {
+      await initTables(p);
+      initialized = true;
+    }
+    const result = await p.query(text, params);
+    return result.rows;
+  } catch (err) {
+    console.error('DB Error:', err.message);
+    throw err;
   }
-  const result = await p.query(text, params);
-  return result.rows;
 }
 
 async function initTables(p) {
@@ -71,7 +71,6 @@ async function initTables(p) {
       created_at TIMESTAMP DEFAULT NOW()
     )
   `);
-  console.log('Database tables initialized');
 }
 
 module.exports = { q };
