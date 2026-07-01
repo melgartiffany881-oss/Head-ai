@@ -1,35 +1,41 @@
 /**
- * Database module — Neon Postgres for serverless compatibility.
- * Auto-initializes tables on first call.
+ * Database module — Postgres via `pg` pool
+ * Compatible with Vercel serverless functions.
+ * Uses DATABASE_URL env var (Neon or any Postgres connection string).
  */
 
-const { neon } = require('@neondatabase/serverless');
+const { Pool } = require('pg');
 
-let sql = null;
+let pool = null;
 let initialized = false;
 
-async function getDb() {
-  if (sql && initialized) return sql;
-
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error('DATABASE_URL environment variable is required for Neon Postgres');
+async function getPool() {
+  if (!pool) {
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error('DATABASE_URL environment variable is required');
+    }
+    pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false }, max: 1 });
   }
-
-  if (!sql) {
-    sql = neon(connectionString);
-  }
-
-  if (!initialized) {
-    await initTables(sql);
-    initialized = true;
-  }
-
-  return sql;
+  return pool;
 }
 
-async function initTables(db) {
-  await db`
+/**
+ * Execute a query. Usage: const rows = await q('SELECT * FROM users WHERE email = $1', [email]);
+ * Returns the rows array (not the full result object).
+ */
+async function q(text, params = []) {
+  const p = await getPool();
+  if (!initialized) {
+    await initTables(p);
+    initialized = true;
+  }
+  const result = await p.query(text, params);
+  return result.rows;
+}
+
+async function initTables(p) {
+  await p.query(`
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
@@ -43,9 +49,8 @@ async function initTables(db) {
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
     )
-  `;
-
-  await db`
+  `);
+  await p.query(`
     CREATE TABLE IF NOT EXISTS subscriptions (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id),
@@ -57,18 +62,16 @@ async function initTables(db) {
       current_period_end TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
     )
-  `;
-
-  await db`
+  `);
+  await p.query(`
     CREATE TABLE IF NOT EXISTS usage_log (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id),
       endpoint TEXT NOT NULL,
       created_at TIMESTAMP DEFAULT NOW()
     )
-  `;
-
+  `);
   console.log('Database tables initialized');
 }
 
-module.exports = { getDb };
+module.exports = { q };

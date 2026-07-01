@@ -3,7 +3,7 @@ const cors = require('cors');
 const apiRoutes = require('../src/routes/api');
 const authRoutes = require('../src/routes/auth');
 const webhookRoutes = require('../src/routes/webhooks');
-const { getDb } = require('../src/db/database');
+const { q } = require('../src/db/database');
 
 const app = express();
 

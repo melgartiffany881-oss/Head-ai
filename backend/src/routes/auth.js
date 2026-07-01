@@ -1,18 +1,11 @@
-/**
- * Auth Routes — Register, Login, and Profile
- * Uses async Neon Postgres for Vercel serverless compatibility.
- */
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { getDb } = require('../db/database');
+const { q } = require('../db/database');
 const { generateToken, authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 const SALT_ROUNDS = 10;
 
-/**
- * POST /api/auth/register
- */
 router.post('/register', async (req, res) => {
   try {
     const { email, password, name, company } = req.body;
@@ -23,32 +16,25 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 8 characters.' });
     }
 
-    const db = getDb();
-    const existing = await db`SELECT id FROM users WHERE email = ${email.toLowerCase()}`;
+    const existing = await q('SELECT id FROM users WHERE email = $1', [email.toLowerCase()]);
     if (existing.length > 0) {
       return res.status(409).json({ error: 'An account with this email already exists.' });
     }
 
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-    const result = await db`
-      INSERT INTO users (email, password_hash, name, company, subscription_tier, subscription_status)
-      VALUES (${email.toLowerCase()}, ${passwordHash}, ${name.trim()}, ${company || ''}, 'starter', 'active')
-      RETURNING id, email, name, company, subscription_tier, subscription_status, created_at
-    `;
+    const result = await q(
+      `INSERT INTO users (email, password_hash, name, company, subscription_tier, subscription_status)
+       VALUES ($1, $2, $3, $4, 'starter', 'active')
+       RETURNING id, email, name, company, subscription_tier, subscription_status, created_at`,
+      [email.toLowerCase(), passwordHash, name.trim(), company || '']
+    );
 
     const user = result[0];
     const token = generateToken(user);
 
     res.status(201).json({
       message: 'Account created successfully',
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        company: user.company,
-        subscription_tier: user.subscription_tier,
-        subscription_status: user.subscription_status
-      },
+      user: { id: user.id, email: user.email, name: user.name, company: user.company, subscription_tier: user.subscription_tier, subscription_status: user.subscription_status },
       token
     });
   } catch (err) {
@@ -57,9 +43,6 @@ router.post('/register', async (req, res) => {
   }
 });
 
-/**
- * POST /api/auth/login
- */
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -67,31 +50,18 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required.' });
     }
 
-    const db = getDb();
-    const users = await db`SELECT * FROM users WHERE email = ${email.toLowerCase()}`;
+    const users = await q('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
     const user = users[0];
 
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
-    }
+    if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
 
     const validPassword = await bcrypt.compare(password, user.password_hash);
-    if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
-    }
+    if (!validPassword) return res.status(401).json({ error: 'Invalid email or password.' });
 
     const token = generateToken(user);
-
     res.json({
       message: 'Login successful',
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        company: user.company,
-        subscription_tier: user.subscription_tier,
-        subscription_status: user.subscription_status
-      },
+      user: { id: user.id, email: user.email, name: user.name, company: user.company, subscription_tier: user.subscription_tier, subscription_status: user.subscription_status },
       token
     });
   } catch (err) {
@@ -100,16 +70,9 @@ router.post('/login', async (req, res) => {
   }
 });
 
-/**
- * GET /api/auth/profile
- */
 router.get('/profile', authenticateToken, async (req, res) => {
   try {
-    const db = getDb();
-    const users = await db`
-      SELECT id, email, name, company, subscription_tier, subscription_status, created_at
-      FROM users WHERE id = ${req.user.id}
-    `;
+    const users = await q('SELECT id, email, name, company, subscription_tier, subscription_status, created_at FROM users WHERE id = $1', [req.user.id]);
     const user = users[0];
     if (!user) return res.status(404).json({ error: 'User not found.' });
     res.json({ user });
@@ -119,21 +82,13 @@ router.get('/profile', authenticateToken, async (req, res) => {
   }
 });
 
-/**
- * GET /api/auth/usage
- */
 router.get('/usage', authenticateToken, async (req, res) => {
   try {
-    const db = getDb();
-    const usage = await db`
-      SELECT COUNT(*) as count FROM usage_log
-      WHERE user_id = ${req.user.id}
-      AND date_trunc('month', created_at) = date_trunc('month', NOW())
-    `;
-
-    const total = await db`
-      SELECT COUNT(*) as count FROM usage_log WHERE user_id = ${req.user.id}
-    `;
+    const usage = await q(
+      "SELECT COUNT(*) as count FROM usage_log WHERE user_id = $1 AND date_trunc('month', created_at) = date_trunc('month', NOW())",
+      [req.user.id]
+    );
+    const total = await q('SELECT COUNT(*) as count FROM usage_log WHERE user_id = $1', [req.user.id]);
 
     res.json({
       currentMonthRoles: parseInt(usage[0]?.count || 0),
