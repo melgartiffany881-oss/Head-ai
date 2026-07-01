@@ -1,54 +1,83 @@
 /**
- * Database module — Neon Postgres via `pg` with Neon's HTTP keepalive settings.
- * Falls back to in-memory if PG unavailable.
+ * Database module — Neon HTTP driver (no WebSocket needed) with in-memory fallback.
+ * Uses @neondatabase/serverless with WebSocket disabled (HTTP mode).
  */
 
-const { Pool } = require('pg');
+let neonSql = null;
+let pgPool = null;
+let pgFailed = false;
 
-let pool = null;
-let initialized = false;
-let poolFailed = false;
-
-function getPool() {
-  if (pool) return pool;
-  if (poolFailed) return null;
-
+// Try Neon HTTP driver first
+try {
+  const { neon } = require('@neondatabase/serverless');
   const url = process.env.DATABASE_URL;
-  if (!url || !url.startsWith('postgres')) {
-    poolFailed = true;
-    return null;
+  if (url && url.startsWith('postgres')) {
+    neonSql = neon(url);
   }
+} catch (e) { /* Neon not available */ }
 
+// Fallback: try pg pool
+if (!neonSql) {
   try {
-    pool = new Pool({
-      connectionString: url,
-      ssl: { rejectUnauthorized: false },
-      max: 1,
-      idleTimeoutMillis: 10000,
-      connectionTimeoutMillis: 8000,
-    });
-    return pool;
-  } catch (e) {
-    console.error('PG Pool creation failed:', e.message);
-    poolFailed = true;
-    return null;
-  }
+    const { Pool } = require('pg');
+    const url = process.env.DATABASE_URL;
+    if (url && url.startsWith('postgres')) {
+      pgPool = new Pool({ connectionString: url, ssl: { rejectUnauthorized: false }, max: 1, connectionTimeoutMillis: 5000 });
+    }
+  } catch (e) { /* pg not available */ }
 }
 
-// In-memory fallback
+// In-memory fallback store (per-request, won't persist across serverless calls)
 const memStore = { users: [], subs: [], usage: [], nextId: 1 };
+let tablesCreated = false;
+
+async function createTables(db) {
+  if (tablesCreated) return;
+  await db`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL, company TEXT DEFAULT '', role TEXT DEFAULT 'user', subscription_tier TEXT DEFAULT 'starter', subscription_status TEXT DEFAULT 'active', stripe_customer_id TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`;
+  await db`CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL, stripe_subscription_id TEXT UNIQUE, stripe_customer_id TEXT, tier TEXT NOT NULL DEFAULT 'starter', status TEXT NOT NULL DEFAULT 'active', current_period_start TIMESTAMP, current_period_end TIMESTAMP, created_at TIMESTAMP DEFAULT NOW())`;
+  await db`CREATE TABLE IF NOT EXISTS usage_log (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL, endpoint TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`;
+  tablesCreated = true;
+}
+
+async function q(text, params = []) {
+  // Try Neon HTTP driver first (works on Vercel)
+  if (neonSql) {
+    try {
+      if (!tablesCreated) await createTables(neonSql);
+      return await neonSql(text, ...params);
+    } catch (err) {
+      console.error('Neon error:', err.message);
+    }
+  }
+
+  // Try pg pool fallback
+  if (pgPool) {
+    try {
+      if (!tablesCreated) {
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL, company TEXT DEFAULT '', role TEXT DEFAULT 'user', subscription_tier TEXT DEFAULT 'starter', subscription_status TEXT DEFAULT 'active', stripe_customer_id TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`);
+        tablesCreated = true;
+      }
+      const r = await pgPool.query(text, params);
+      return r.rows;
+    } catch (err) {
+      console.error('PG error:', err.message);
+    }
+  }
+
+  // In-memory fallback
+  return memQuery(text, params);
+}
 
 function memQuery(text, params) {
   const upper = text.trim().toUpperCase();
   if (upper.startsWith('CREATE TABLE')) return [];
 
-  const tableMatch = text.match(/(?:FROM|INTO|UPDATE)\s+(\w+)/i);
-  if (!tableMatch) return [];
-  const table = tableMatch[1].toLowerCase();
+  const tableMatch = text.match(/(?:FROM|INTO|UPDATE|TABLE\s+(\w+))/i);
+  const table = tableMatch?.[1]?.toLowerCase() || '';
   const store = table === 'users' ? memStore.users : table === 'subscriptions' ? memStore.subs : table === 'usage_log' ? memStore.usage : null;
-  if (!store) return [];
+  if (!store && !upper.startsWith('INSERT') && !upper.startsWith('UPDATE')) return [];
 
-  if (upper.startsWith('INSERT')) {
+  if (upper.startsWith('INSERT') && store) {
     const colsMatch = text.match(/\(([^)]+)\)\s*VALUES/i);
     const valsMatch = text.match(/VALUES\s*\(([^)]+)\)/i);
     if (colsMatch && valsMatch) {
@@ -61,84 +90,55 @@ function memQuery(text, params) {
         row[col] = pm ? params[parseInt(pm[1]) - 1] : ref.replace(/'/g, '');
       });
       store.push(row);
-      if (text.includes('RETURNING')) return [row];
-      return [{ id: row.id }];
+      return text.includes('RETURNING') ? [row] : [{ id: row.id }];
     }
   }
 
-  if (upper.startsWith('SELECT')) {
+  if (upper.startsWith('SELECT') && store) {
     let rows = [...store];
     const whereMatch = text.match(/WHERE\s+(.+?)(?:ORDER|GROUP|LIMIT|$)/i);
     if (whereMatch) {
-      const condition = whereMatch[1].trim();
-      const eqParts = condition.split(/\s*=\s*/);
-      if (eqParts.length === 2) {
-        const field = eqParts[0].trim().toLowerCase();
-        let val = eqParts[1].trim().replace(/^'(.*)'$/, '$1');
+      const parts = whereMatch[1].trim().split(/\s*=\s*/);
+      if (parts.length === 2) {
+        let val = parts[1].trim().replace(/^'(.*)'$/, '$1');
         const pm = val.match(/^\$(\d+)$/);
         if (pm) val = params[parseInt(pm[1]) - 1];
-        rows = rows.filter(r => String(r[field] || '') === String(val));
+        rows = rows.filter(r => String(r[parts[0].trim().toLowerCase()] || '') === String(val));
       }
     }
     if (text.includes('COUNT(*)')) return [{ count: rows.length }];
     return rows;
   }
 
-  if (upper.startsWith('UPDATE')) {
+  if (upper.startsWith('UPDATE') && store) {
     const setMatch = text.match(/SET\s+(.+?)(?:WHERE|$)/i);
-    if (setMatch) {
+    const whereMatch = text.match(/WHERE\s+(.+?)$/i);
+    if (setMatch && whereMatch) {
       const sets = setMatch[1].split(',').map(s => s.trim());
-      const whereMatch = text.match(/WHERE\s+(.+?)$/i);
-      let rows = [...store];
-      if (whereMatch) {
-        const parts = whereMatch[1].trim().split(/\s*=\s*/);
-        if (parts.length === 2) {
-          let val = parts[1].trim().replace(/^'(.*)'$/, '$1');
-          const pm = val.match(/^\$(\d+)$/);
-          if (pm) val = params[parseInt(pm[1]) - 1];
-          rows = store.filter(r => String(r[parts[0].trim().toLowerCase()] || '') === String(val));
-        }
-      }
-      rows.forEach(row => {
-        sets.forEach(set => {
-          const parts = set.split(/\s*=\s*/);
-          if (parts.length === 2) {
-            let val = parts[1].trim();
-            const pm = val.match(/^\$(\d+)$/);
-            if (pm) val = params[parseInt(pm[1]) - 1];
-            if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
-            row[parts[0].toLowerCase()] = val;
-          }
+      const wp = whereMatch[1].trim().split(/\s*=\s*/);
+      if (wp.length === 2) {
+        let val = wp[1].trim().replace(/^'(.*)'$/, '$1');
+        const pm = val.match(/^\$(\d+)$/);
+        if (pm) val = params[parseInt(pm[1]) - 1];
+        const rows = store.filter(r => String(r[wp[0].trim().toLowerCase()] || '') === String(val));
+        rows.forEach(row => {
+          sets.forEach(set => {
+            const sp = set.split(/\s*=\s*/);
+            if (sp.length === 2) {
+              let v = sp[1].trim();
+              const pm2 = v.match(/^\$(\d+)$/);
+              if (pm2) v = params[parseInt(pm2[1]) - 1];
+              if (v.startsWith("'") && v.endsWith("'")) v = v.slice(1, -1);
+              row[sp[0].toLowerCase()] = v;
+            }
+          });
         });
-      });
+      }
     }
     return [];
   }
 
   return [];
-}
-
-async function q(text, params = []) {
-  const p = getPool();
-  if (p) {
-    try {
-      if (!initialized) {
-        await tryInit(p);
-        initialized = true;
-      }
-      const r = await p.query(text, params);
-      return r.rows;
-    } catch (err) {
-      console.error('PG query error:', err.message);
-    }
-  }
-  return memQuery(text, params);
-}
-
-async function tryInit(p) {
-  await p.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL, company TEXT DEFAULT '', role TEXT DEFAULT 'user', subscription_tier TEXT DEFAULT 'starter', subscription_status TEXT DEFAULT 'active', stripe_customer_id TEXT, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())`);
-  await p.query(`CREATE TABLE IF NOT EXISTS subscriptions (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL, stripe_subscription_id TEXT UNIQUE, stripe_customer_id TEXT, tier TEXT NOT NULL DEFAULT 'starter', status TEXT NOT NULL DEFAULT 'active', current_period_start TIMESTAMP, current_period_end TIMESTAMP, created_at TIMESTAMP DEFAULT NOW())`);
-  await p.query(`CREATE TABLE IF NOT EXISTS usage_log (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL, endpoint TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
 }
 
 module.exports = { q };
