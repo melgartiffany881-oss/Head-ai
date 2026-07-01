@@ -3,12 +3,9 @@ const cors = require('cors');
 const apiRoutes = require('../src/routes/api');
 const authRoutes = require('../src/routes/auth');
 const webhookRoutes = require('../src/routes/webhooks');
-const { getDb, closeDb } = require('../src/db/database');
+const { getDb } = require('../src/db/database');
 
 const app = express();
-
-// Initialize database (creates tables on first call)
-getDb();
 
 // Middleware
 app.use(cors());

@@ -1,45 +1,74 @@
-const path = require('path');
-const Database = require('better-sqlite3');
-const crypto = require('crypto');
+/**
+ * Database module — Neon Postgres for serverless compatibility.
+ * Auto-initializes tables on first call.
+ */
 
-const DB_PATH = path.join(__dirname, '..', '..', 'data', 'hirestack.db');
+const { neon } = require('@neondatabase/serverless');
 
-let db = null;
+let sql = null;
+let initialized = false;
 
-function getDb() {
-  if (db) return db;
+async function getDb() {
+  if (sql && initialized) return sql;
 
-  const fs = require('fs');
-  const dir = path.dirname(DB_PATH);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL environment variable is required for Neon Postgres');
+  }
 
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  if (!sql) {
+    sql = neon(connectionString);
+  }
 
-  db.exec(`
+  if (!initialized) {
+    await initTables(sql);
+    initialized = true;
+  }
+
+  return sql;
+}
+
+async function initTables(db) {
+  await db`
     CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
+      id SERIAL PRIMARY KEY,
       email TEXT UNIQUE NOT NULL,
-      password TEXT NOT NULL,
-      name TEXT,
-      plan TEXT DEFAULT 'free',
-      stripeCustomerId TEXT,
-      rolesUsed INTEGER DEFAULT 0,
-      rolesLimit INTEGER DEFAULT 0,
-      createdAt TEXT DEFAULT (datetime('now'))
-    );
-  `);
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      company TEXT DEFAULT '',
+      role TEXT DEFAULT 'user',
+      subscription_tier TEXT DEFAULT 'starter',
+      subscription_status TEXT DEFAULT 'active',
+      stripe_customer_id TEXT,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+    )
+  `;
 
-  return db;
+  await db`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      stripe_subscription_id TEXT UNIQUE,
+      stripe_customer_id TEXT,
+      tier TEXT NOT NULL DEFAULT 'starter',
+      status TEXT NOT NULL DEFAULT 'active',
+      current_period_start TIMESTAMP,
+      current_period_end TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `;
+
+  await db`
+    CREATE TABLE IF NOT EXISTS usage_log (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      endpoint TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `;
+
+  console.log('Database tables initialized');
 }
 
-function closeDb() {
-  if (db) { db.close(); db = null; }
-}
-
-function uuid() {
-  return crypto.randomUUID();
-}
-
-module.exports = { getDb, closeDb, uuid };
+module.exports = { getDb };
